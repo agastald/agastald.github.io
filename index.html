@@ -6,18 +6,18 @@ if(/(android|bb\d+|meego).+mobile|avantgo|bada\/|blackberry|blazer|compal|elaine
     isMobile = true;
 }
 var language = navigator.language || navigator.browserLanguage; //for IE
-var english = language.startsWith('en')
+var isEnglish = language.startsWith('en')
 var url = 'cv'
-url += (english) ? '-en' : ''
-url += (mobile) ? '.pdf' : '.html'
+url += (isEnglish) ? '-en' : ''
+url += (isMobile) ? '.pdf' : '.html'
 // if (isMobile) {
-//     if (english) {
+//     if (isEnglish) {
 //         url = 'cv-en.pdf'
 //     } else {
 //         url = 'cv.pdf'
 //     }
 // } else {
-//     if (english) {
+//     if (isEnglish) {
 //         url = 'cv-en.html'
 //     } else {
 //         url = 'cv.html'
