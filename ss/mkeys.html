@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Meal Keys</title>
+<link rel="icon" href="restaurant.png">
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 1em auto; padding: 0 1em; color: #222; }
+  section { border: 1px solid #ccc; border-radius: 8px; padding: 1em; margin-bottom: 1.5em; }
+  h2 { margin-top: 0; }
+  .grid { display: grid; grid-template-columns: auto repeat(4, 1fr); gap: 8px; max-width: 340px; margin: 0 auto; }
+  .row-label { align-self: center; text-align: right; font-size: 12px; color: #666; }
+  #logo { width: 1.6em; height: 1.6em; vertical-align: middle; margin-left: .2em; }
+  .dish { position: relative; font-size: 32px; padding: 6px 0; border: 2px solid #ddd; border-radius: 10px; text-align: center;
+            background: #fafafa; cursor: pointer; user-select: none; }
+  .dish:hover { border-color: #999; }
+  .dish.selected { border-color: #2a7; background: #e8f7ef; }
+  textarea, input { width: 100%; box-sizing: border-box; font-family: monospace; font-size: 16px; }
+  label { display: block; margin: .6em 0 .2em; font-weight: 600; }
+  button.action { margin-top: .6em; padding: .4em 1em; cursor: pointer; }
+  .row { display: flex; gap: .5em; }
+  .row input { flex: 1; }
+  .err { color: #b00; }
+  .hint { color: #666; font-size: 13px; }
+  .hidden { display: none; }
+  #plainView { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 18px; line-height: 1.4; }
+  .title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: .6em; }
+  .title-row h2 { margin: 0; }
+  .title-buttons { display: flex; flex-direction: column; gap: 4px; }
+  #shareSection { border: none; padding: 0; }
+  #linkHint { white-space: pre-line; overflow-wrap: anywhere; }
+  #btnBigShare { width: 100%; padding: .9em; font-size: 20px; font-weight: 600; color: #fff; background: #2a7;
+                 border: none; border-radius: 12px; cursor: pointer; }
+</style>
+</head>
+<body>
+
+<div id="plainView" class="hidden"></div>
+
+<section>
+  <div class="title-row">
+    <!-- Plate image: Twemoji 1f37d (CC-BY 4.0, https://github.com/jdecked/twemoji) -->
+    <h2>1. Pick your meal <img id="logo" src="restaurant.png" alt=""></h2>
+    <div class="title-buttons">
+      <button id="btnReset">Reset</button>
+      <button id="btnManual">Manual</button>
+    </div>
+  </div>
+  <p id="linkHint" class="hint hidden"></p>
+  <div id="grid" class="grid"></div>
+  <p class="hint" id="pickHint">Selected: 0 / 5</p>
+  <label for="word">Waiter's name (at least 3 letters)</label>
+  <input id="word" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+</section>
+
+<!-- Simple mode: one big button instead of section 2 -->
+<section id="shareSection" class="hidden">
+  <button id="btnBigShare">Compartilhar chave publica</button>
+</section>
+
+<!-- Manual mode: the public key, with Copy/Share -->
+<section id="keySection" class="hidden">
+  <h2>2. Your public key</h2>
+  <label>Public key (send this to whoever wants to write to you)</label>
+  <div class="row">
+    <input id="pubOut" readonly>
+    <button id="btnCopyPub">Copy</button>
+    <button id="btnSharePub" class="hidden">Share</button>
+  </div>
+</section>
+
+<!-- Manual decrypt, hidden until the Manual button is tapped: messages normally arrive as links (#p=...&d=...) -->
+<section id="decSection" class="hidden">
+  <h2>3. Decrypt a message</h2>
+  <label>Encrypted text</label>
+  <textarea id="decIn" rows="4"></textarea>
+  <button class="action hidden" id="btnPasteDec">Paste &amp; Decrypt</button>
+  <button class="action" id="btnDec">Decrypt</button>
+  <label>Message</label>
+  <textarea id="decOut" rows="5" readonly></textarea>
+  <div id="decErr" class="err"></div>
+</section>
+
+<script type="module">
+
+// One pick per row, in this order; the 5 names (joined by spaces) are the phrase, the waiter's name is the word
+const MENU = [
+  ['Salad',   [['lettuce', '🥬'], ['tomato', '🍅'], ['cucumber', '🥒'], ['carrot', '🥕']]],
+  ['Carbs',   [['rice', '🍚'], ['pasta', '🍝'], ['beans', '🫘'], ['bread', '🍞']]],
+  ['Protein', [['meat', '🥩'], ['chicken', '🍗'], ['fish', '🐟'], ['eggs', '🥚']]],
+  ['Drink',   [['juice', '🧃'], ['soda', '🥤'], ['beer', '🍺'], ['wine', '🍷']]],
+  ['Dessert', [['apple', '🍎'], ['banana', '🍌'], ['strawberry', '🍓'], ['watermelon', '🍉']]],
+];
+
+const $ = id => document.getElementById(id);
+const subtle = crypto.subtle;
+const EC = { name: 'X25519' };
+// PKCS#8 for X25519 = fixed 16-byte header + 32-byte secret
+const PKCS8_HEADER = Uint8Array.from([0x30,0x2e,0x02,0x01,0x00,0x30,0x05,0x06,0x03,0x2b,0x65,0x6e,0x04,0x22,0x04,0x20]);
+
+// base64url without padding, same format as index.html
+const toB64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const fromB64 = s => Uint8Array.from(atob(s.replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+
+// BIP-39 seed derivation: PBKDF2-HMAC-SHA512(NFKD(phrase), salt "mnemonic" + passphrase, 2048 iterations, 64 bytes).
+// Done directly because @scure/bip39 v2 rejects phrases that aren't valid 12-24 word mnemonics.
+async function mnemonicToSeed(phrase, passphrase = '') {
+  const enc = new TextEncoder();
+  const key = await subtle.importKey('raw', enc.encode(phrase.normalize('NFKD')), 'PBKDF2', false, ['deriveBits']);
+  const salt = enc.encode(('mnemonic' + passphrase).normalize('NFKD'));
+  return new Uint8Array(await subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-512', salt, iterations: 2048 }, key, 512));
+}
+
+let picked = MENU.map(() => null);   // chosen name per row
+let privateKey = null;   // non-extractable CryptoKey, never displayed
+
+const chosen = () => picked.filter(Boolean);
+const complete = () => picked.every(Boolean);
+
+function render() {
+  $('grid').innerHTML = '';
+  MENU.forEach(([label, items], row) => {
+    const head = document.createElement('div');
+    head.className = 'row-label';
+    head.textContent = label;
+    $('grid').appendChild(head);
+    for (const [name, emoji] of items) {
+      const cell = document.createElement('div');
+      cell.className = 'dish' + (picked[row] === name ? ' selected' : '');
+      cell.title = name;
+      cell.textContent = emoji;
+      cell.onclick = () => toggle(row, name);
+      $('grid').appendChild(cell);
+    }
+  });
+  $('pickHint').textContent = `Selected: ${chosen().length} / ${MENU.length}` + (chosen().length ? ` (${chosen().join(' ')})` : '');
+}
+
+// One choice per row: tapping another item in the row replaces it, tapping the chosen one clears it
+function toggle(row, name) {
+  picked[row] = picked[row] === name ? null : name;
+  render();
+  update();
+}
+
+// Lowercased so a phone auto-capitalizing the first letter doesn't change the keys
+const secretWord = () => $('word').value.trim().toLowerCase();
+
+function update() {
+  if (complete() && secretWord().length >= 3) deriveKeys();
+  else clearKeys();
+}
+
+function clearKeys() {
+  privateKey = null;
+  $('pubOut').value = $('decOut').value = $('decErr').textContent = '';
+  updateView();
+}
+
+// 5 dishes + waiter's name (as the BIP-39 passphrase) -> BIP-39 seed (PBKDF2-HMAC-SHA512) -> first 32 bytes = X25519 private key
+async function keyPair(phrase, word) {
+  const seed = await mnemonicToSeed(phrase, word);
+  const pkcs8 = new Uint8Array(48);
+  pkcs8.set(PKCS8_HEADER);
+  pkcs8.set(seed.slice(0, 32), 16);
+  // Extractable only long enough to compute the public key, then re-imported as non-extractable
+  const tmp = await subtle.importKey('pkcs8', pkcs8, EC, true, ['deriveKey']);
+  const jwk = await subtle.exportKey('jwk', tmp);
+  const pubKey = await subtle.importKey('jwk', { kty: 'OKP', crv: 'X25519', x: jwk.x }, EC, true, []);
+  const pub = toB64(await subtle.exportKey('raw', pubKey));
+  const priv = await subtle.importKey('pkcs8', pkcs8, EC, false, ['deriveKey']);
+  return { pub, priv };
+}
+
+async function deriveKeys() {
+  const phrase = picked.join(' ');
+  const word = secretWord();
+  try {
+    const { pub, priv } = await keyPair(phrase, word);
+    if (picked.join(' ') !== phrase || secretWord() !== word) return;   // selection or word changed while deriving
+    privateKey = priv;
+    $('pubOut').value = pub;
+    updateView();
+    if (link.d && (!link.p || link.p === pub)) {
+      const text = await decrypt(link.d, pub);
+      if (text !== null) showMessage(text);
+      else setLinkHint('This message could not be read. The link may be incomplete.');
+    } else if (link.d) {
+      setLinkHint("This meal and waiter's name do not match the key this message was sent to.");
+    }
+  } catch (e) {
+    console.log('Could not create keys:', e);
+    alert('Could not create keys: ' + e + '\n(X25519 needs Chrome 133+, Firefox 130+, Safari 17+.)');
+  }
+}
+
+// Manual decrypt ("3. Decrypt a message" section, shown by the Manual button)
+async function manualDecrypt() {
+  $('decErr').textContent = '';
+  $('decOut').value = '';
+  if (!privateKey) {
+    $('decErr').textContent = "Pick your meal and type the waiter's name first.";
+    return;
+  }
+  const text = await decrypt($('decIn').value, $('pubOut').value);
+  if (text !== null) $('decOut').value = text;
+  else $('decErr').textContent = "Decryption failed: wrong meal, wrong waiter's name or corrupted text.";
+}
+
+// Reading the clipboard needs a user tap; some browsers also show a "Paste" confirmation or permission prompt
+async function pasteAndDecrypt() {
+  try {
+    $('decIn').value = await navigator.clipboard.readText();
+  } catch (e) {
+    $('decErr').textContent = 'Could not read the clipboard. Paste the text in the box and tap Decrypt.';
+    return;
+  }
+  await manualDecrypt();
+}
+
+// Input format: base64url( ephemeralPub[32] | iv[12] | ciphertext ), as produced by index.html.
+// Returns the message, or null if it can't be decrypted. On success the key pair (pub -> privateKey) is saved.
+async function decrypt(b64, pub) {
+  try {
+    const data = fromB64(b64);
+    const ephPub = await subtle.importKey('raw', data.slice(0, 32), EC, false, []);
+    const key = await subtle.deriveKey({ name: 'X25519', public: ephPub }, privateKey, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+    const pt = await subtle.decrypt({ name: 'AES-GCM', iv: data.slice(32, 44) }, key, data.slice(44));
+    saveKey(pub, privateKey);
+    return new TextDecoder().decode(pt);
+  } catch (e) {
+    console.log('Decryption failed:', e);
+    return null;
+  }
+}
+
+// Manual off: big share button (once keys exist). Manual on: section 2 with the key, and section 3 (decrypt).
+let manual = false;
+
+function updateView() {
+  const hasKeys = !!$('pubOut').value;
+  $('shareSection').classList.toggle('hidden', !hasKeys || manual);
+  $('keySection').classList.toggle('hidden', !hasKeys || !manual);
+  $('decSection').classList.toggle('hidden', !manual);
+}
+
+// Big button: share sheet on phones, otherwise copy the key
+async function bigShare() {
+  if (useShare) return share();
+  await copyKey();
+  $('btnBigShare').textContent = 'Chave copiada!';
+  setTimeout(() => $('btnBigShare').textContent = 'Compartilhar chave publica', 1500);
+}
+
+async function copyKey() {
+  saveKey($('pubOut').value, privateKey);
+  await navigator.clipboard.writeText($('pubOut').value);
+}
+
+async function copy(btn) {
+  await copyKey();
+  btn.textContent = 'Copied!';
+  setTimeout(() => btn.textContent = 'Copy', 1200);
+}
+
+async function share() {
+  saveKey($('pubOut').value, privateKey);
+  try {
+    await navigator.share({ text: $('pubOut').value });
+  } catch (e) {
+    if (e.name !== 'AbortError') alert('Could not share: ' + e);   // AbortError = user closed the share sheet
+  }
+}
+
+// Keys are kept in this browser's IndexedDB as a map: public key -> private key.
+// Only keys that are actually used are saved: public key copied/shared, or a message decrypted.
+// The private key is stored as a non-extractable CryptoKey, so it can decrypt but can't be read back.
+// Nothing goes to the server; if the storage is cleared, picking the same meal and waiter's name recreates the keys.
+function db() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('meal-keys', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('keys');
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveKey(pub, priv) {
+  try {
+    const tx = (await db()).transaction('keys', 'readwrite');
+    tx.objectStore('keys').put(priv, pub);
+    await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); });
+    navigator.storage?.persist?.();   // ask the browser not to evict the data (Safari may ignore it)
+  } catch (e) {
+    console.log('Could not save key:', e);
+  }
+}
+
+async function loadKey(pub) {
+  try {
+    const req = (await db()).transaction('keys').objectStore('keys').get(pub);
+    return await new Promise((resolve, reject) => { req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); });
+  } catch (e) {
+    console.log('Could not load key:', e);
+  }
+}
+
+function setLinkHint(text) {
+  $('linkHint').textContent = text;
+  $('linkHint').classList.toggle('hidden', !text);
+}
+
+// Message links: akeys.html#p=<public key>&d=<encrypted text> (or ?p=...&d=...)
+const params = new URLSearchParams(location.hash.slice(1) || location.search);
+const link = { p: params.get('p'), d: params.get('d') };
+// m=1: open in manual mode; a decrypted link message then shows in section 3 instead of the message-only view
+const forceManual = params.get('m') === '1';
+
+// Test keys: #k=salad,carbs,protein,drink,dessert,waiter (repeat k for several) derives and saves each key pair,
+// so later message links for those keys open directly. The dishes don't have to be on the menu.
+async function registerKeys() {
+  const entries = params.getAll('k');
+  if (!entries.length) return;
+  const lines = [];
+  for (const entry of entries) {
+    const parts = entry.split(',').map(x => x.trim().toLowerCase());
+    if (parts.length !== MENU.length + 1 || parts.some(x => !x)) {
+      lines.push(`Invalid k=${entry} (expected salad,carbs,protein,drink,dessert,waiter)`);
+      continue;
+    }
+    const { pub, priv } = await keyPair(parts.slice(0, MENU.length).join(' '), parts[MENU.length]);
+    await saveKey(pub, priv);
+    lines.push(`Registered ${parts.slice(0, MENU.length).join(' ')} + ${parts[MENU.length]}: ${pub}`);
+  }
+  setLinkHint(lines.join('\n'));
+  // Remove k from the address bar so the words don't stay visible; keep p and d if present
+  params.delete('k');
+  const rest = params.toString();
+  history.replaceState(null, '', location.pathname + (location.hash ? (rest ? '#' + rest : '') : (rest ? '?' + rest : '')));
+}
+
+// After a message link decrypts, show only the message (as text, never as HTML)
+function showMessage(text) {
+  if (!forceManual) return showPlain(text);
+  $('decIn').value = link.d;
+  $('decOut').value = text;
+}
+
+function showPlain(text) {
+  for (const section of document.querySelectorAll('section')) section.classList.add('hidden');
+  $('plainView').textContent = text;
+  $('plainView').classList.remove('hidden');
+}
+
+async function openLink() {
+  if (!link.d) return;
+  const priv = link.p && await loadKey(link.p);
+  if (priv && chosen().length === 0) {
+    privateKey = priv;
+    if (forceManual) {
+      $('pubOut').value = link.p;
+      updateView();
+    }
+    const text = await decrypt(link.d, link.p);
+    if (text !== null) showMessage(text);
+    else setLinkHint('This message could not be read. The link may be incomplete.');
+  } else if (!priv) {
+    // No saved key on this browser: switch to manual mode with the message in the decrypt box
+    manual = true;
+    updateView();
+    $('decIn').value = link.d;
+    setLinkHint("You received a message. Pick your meal and type the waiter's name to read it.");
+  }
+}
+
+$('btnReset').onclick = () => { picked = MENU.map(() => null); $('word').value = ''; render(); clearKeys(); };
+$('word').oninput = update;
+$('btnCopyPub').onclick = e => copy(e.target);
+$('btnSharePub').onclick = share;
+// On phones/tablets (touchscreen as main input) with the Web Share API, show Share instead of Copy
+const useShare = navigator.share && matchMedia('(pointer: coarse)').matches;
+if (useShare) {
+  $('btnSharePub').classList.remove('hidden');
+  $('btnCopyPub').classList.add('hidden');
+}
+$('btnManual').onclick = () => { manual = !manual; updateView(); };
+$('btnBigShare').onclick = bigShare;
+$('btnDec').onclick = manualDecrypt;
+$('btnPasteDec').onclick = pasteAndDecrypt;
+if (navigator.clipboard?.readText) $('btnPasteDec').classList.remove('hidden');
+render();
+if (forceManual) {
+  manual = true;
+  updateView();
+}
+registerKeys().catch(e => setLinkHint("Could not register keys: " + e)).then(openLink);
+</script>
+</body>
+</html>
