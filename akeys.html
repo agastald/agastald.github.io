@@ -8,7 +8,7 @@
   body { font-family: system-ui, sans-serif; max-width: 640px; margin: 1em auto; padding: 0 1em; color: #222; }
   section { border: 1px solid #ccc; border-radius: 8px; padding: 1em; margin-bottom: 1.5em; }
   h2 { margin-top: 0; }
-  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; max-width: 240px; margin: 0 auto; }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; max-width: 300px; margin: 0 auto; }
   .animal { position: relative; font-size: 32px; padding: 6px 0; border: 2px solid #ddd; border-radius: 10px; text-align: center;
             background: #fafafa; cursor: pointer; user-select: none; }
   .animal:hover { border-color: #999; }
@@ -80,11 +80,19 @@
 </section>
 
 <script type="module">
-// Every name is a word from the BIP-39 English wordlist
+
+// // Every name is a word from the BIP-39 English wordlist
+// const ANIMALS = [
+//   ['cat', '🐱'], ['dog', '🐶'], ['lion', '🦁'],
+//   ['tiger', '🐯'], ['horse', '🐴'], ['monkey', '🐵'],
+//   ['rabbit', '🐰'], ['elephant', '🐘'], ['panda', '🐼'],
+// ];
+
 const ANIMALS = [
-  ['cat', '🐱'], ['dog', '🐶'], ['lion', '🦁'],
-  ['tiger', '🐯'], ['horse', '🐴'], ['monkey', '🐵'],
-  ['rabbit', '🐰'], ['elephant', '🐘'], ['panda', '🐼'],
+  ['cat', '🐱'], ['dog', '🐶'], ['lion', '🦁'], ['tiger', '🐯'],
+  ['horse', '🐴'], ['monkey', '🐵'], ['rabbit', '🐰'], ['elephant', '🐘'],
+  ['panda', '🐼'], ['fox', '🦊'], ['whale', '🐳'], ['frog', '🐸'],
+  ['pig', '🐷'], ['mouse', '🐭'], ['zebra', '🦓'], ['giraffe', '🦒'],
 ];
 
 const $ = id => document.getElementById(id);
@@ -171,7 +179,7 @@ async function deriveKeys() {
     updateView();
     if (link.d && (!link.p || link.p === pub)) {
       const text = await decrypt(link.d, pub);
-      if (text !== null) showPlain(text);
+      if (text !== null) showMessage(text);
       else setLinkHint('This message could not be read. The link may be incomplete.');
     } else if (link.d) {
       setLinkHint('These animals and word do not match the key this message was sent to.');
@@ -298,9 +306,11 @@ function setLinkHint(text) {
   $('linkHint').classList.toggle('hidden', !text);
 }
 
-// Message links: index8.html#p=<public key>&d=<encrypted text> (or ?p=...&d=...)
+// Message links: akeys.html#p=<public key>&d=<encrypted text> (or ?p=...&d=...)
 const params = new URLSearchParams(location.hash.slice(1) || location.search);
 const link = { p: params.get('p'), d: params.get('d') };
+// m=1: open in manual mode; a decrypted link message then shows in section 3 instead of the message-only view
+const forceManual = params.get('m') === '1';
 
 // Test keys: #k=animal1,animal2,animal3,word (repeat k for several) derives and saves each key pair,
 // so later message links for those keys open directly. Animals don't have to be on the grid.
@@ -326,6 +336,12 @@ async function registerKeys() {
 }
 
 // After a message link decrypts, show only the message (as text, never as HTML)
+function showMessage(text) {
+  if (!forceManual) return showPlain(text);
+  $('decIn').value = link.d;
+  $('decOut').value = text;
+}
+
 function showPlain(text) {
   for (const section of document.querySelectorAll('section')) section.classList.add('hidden');
   $('plainView').textContent = text;
@@ -337,10 +353,18 @@ async function openLink() {
   const priv = link.p && await loadKey(link.p);
   if (priv && picked.length === 0) {
     privateKey = priv;
+    if (forceManual) {
+      $('pubOut').value = link.p;
+      updateView();
+    }
     const text = await decrypt(link.d, link.p);
-    if (text !== null) showPlain(text);
+    if (text !== null) showMessage(text);
     else setLinkHint('This message could not be read. The link may be incomplete.');
   } else if (!priv) {
+    // No saved key on this browser: switch to manual mode with the message in the decrypt box
+    manual = true;
+    updateView();
+    $('decIn').value = link.d;
     setLinkHint('You received a message. Pick your 3 animals and type your word to read it.');
   }
 }
@@ -361,6 +385,10 @@ $('btnDec').onclick = manualDecrypt;
 $('btnPasteDec').onclick = pasteAndDecrypt;
 if (navigator.clipboard?.readText) $('btnPasteDec').classList.remove('hidden');
 render();
+if (forceManual) {
+  manual = true;
+  updateView();
+}
 registerKeys().catch(e => setLinkHint("Could not register keys: " + e)).then(openLink);
 </script>
 </body>
