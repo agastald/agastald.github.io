@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Avatar Keys 2</title>
+<link rel="icon" href="favicon.ico">
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 1em auto; padding: 0 1em; color: #222; }
+  section { border: 1px solid #ccc; border-radius: 8px; padding: 1em; margin-bottom: 1.5em; }
+  h2 { margin-top: 0; }
+  #faceRow { display: flex; align-items: center; justify-content: center; gap: 10px; }
+  #preview { display: block; width: 150px; height: 150px; }
+  #previewName { text-align: center; font-weight: 600; min-height: 1.3em; margin: .2em 0 .8em; }
+  .sex { width: 64px; font-size: 12px; }
+  .sex svg { width: 56px; height: 56px; }
+  .grid { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 4px; max-width: 420px; margin: 0 auto; }
+  .col { display: flex; flex-direction: column; gap: 4px; }
+  .col-label { font-size: 10px; line-height: 1.1; color: #666; text-align: center; min-height: 2.2em; }
+  .opt { border: 2px solid #ddd; border-radius: 8px; background: #fafafa; cursor: pointer; user-select: none;
+         text-align: center; padding: 1px 0; color: #666; }
+  .opt svg { display: block; width: 100%; aspect-ratio: 1; margin: 0 auto; }
+  .opt:hover { border-color: #999; }
+  .opt.selected { border-color: #2a7; background: #e8f7ef; color: #222; }
+  textarea, input { width: 100%; box-sizing: border-box; font-family: monospace; font-size: 16px; }
+  label { display: block; margin: .6em 0 .2em; font-weight: 600; }
+  button.action { margin-top: .6em; padding: .4em 1em; cursor: pointer; }
+  .row { display: flex; gap: .5em; }
+  .row input { flex: 1; }
+  .err { color: #b00; }
+  .hint { color: #666; font-size: 13px; }
+  .hidden { display: none; }
+  #plainView { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 18px; line-height: 1.4; }
+  .title-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: .6em; }
+  .title-row h2 { margin: 0; }
+  .title-buttons { display: flex; flex-direction: column; gap: 4px; }
+  #shareSection { border: none; padding: 0; }
+  #linkHint { white-space: pre-line; overflow-wrap: anywhere; }
+  #btnBigShare { width: 100%; padding: .9em; font-size: 20px; font-weight: 600; color: #fff; background: #2a7;
+                 border: none; border-radius: 12px; cursor: pointer; }
+</style>
+</head>
+<body>
+
+<div id="plainView" class="hidden"></div>
+
+<section>
+  <div class="title-row">
+    <h2>1. Build your avatar</h2>
+    <div class="title-buttons">
+      <button id="btnReset">Reset</button>
+      <button id="btnManual">Manual</button>
+    </div>
+  </div>
+  <p id="linkHint" class="hint hidden"></p>
+  <div id="faceRow">
+    <div id="sex0" class="opt sex"></div>
+    <svg id="preview" viewBox="0 0 120 120"></svg>
+    <div id="sex1" class="opt sex"></div>
+  </div>
+  <div id="previewName"></div>
+  <div id="grid" class="grid"></div>
+  <p class="hint" id="pickHint"></p>
+  <label for="word">Avatar's name (at least 3 letters)</label>
+  <input id="word" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+</section>
+
+<!-- Simple mode: one big button instead of section 2 -->
+<section id="shareSection" class="hidden">
+  <button id="btnBigShare">Compartilhar chave publica</button>
+</section>
+
+<!-- Manual mode: the public key, with Copy/Share -->
+<section id="keySection" class="hidden">
+  <h2>2. Your public key</h2>
+  <label>Public key (send this to whoever wants to write to you)</label>
+  <div class="row">
+    <input id="pubOut" readonly>
+    <button id="btnCopyPub">Copy</button>
+    <button id="btnSharePub" class="hidden">Share</button>
+  </div>
+</section>
+
+<!-- Manual decrypt, hidden until the Manual button is tapped: messages normally arrive as links (#p=...&d=...) -->
+<section id="decSection" class="hidden">
+  <h2>3. Decrypt a message</h2>
+  <label>Encrypted text</label>
+  <textarea id="decIn" rows="4"></textarea>
+  <button class="action hidden" id="btnPasteDec">Paste &amp; Decrypt</button>
+  <button class="action" id="btnDec">Decrypt</button>
+  <label>Message</label>
+  <textarea id="decOut" rows="5" readonly></textarea>
+  <div id="decErr" class="err"></div>
+</section>
+
+<script type="module">
+
+// One pick per trait. Each option has a BIP-39 word that is only a reference (unrelated to its meaning):
+// the 9 chosen words, in this order and joined by spaces, are the phrase; the avatar's name is the secret word.
+const PARTS = [
+  ['sex',       'Sex',        [['orbit', 'Male'], ['velvet', 'Female']]],
+  ['skin',      'Skin',       [['anchor', 'Light'], ['bamboo', 'Medium'], ['canyon', 'Brown'], ['desert', 'Dark']]],
+  ['hairStyle', 'Hair',       [['eagle', 'Short'], ['fabric', 'Long'], ['galaxy', 'Curly'], ['harbor', 'Bun']]],
+  ['hairColor', 'Hair color', [['jungle', 'Black'], ['kingdom', 'Blond'], ['lemon', 'Red'], ['magnet', 'Gray']]],
+  ['eyes',      'Eyes',       [['napkin', 'Black'], ['oyster', 'Brown'], ['pepper', 'Blue'], ['quantum', 'Green']]],
+  ['ears',      'Ears',       [['ribbon', 'Round'], ['saddle', 'Pointy'], ['timber', 'Small'], ['umbrella', 'Big']]],
+  ['nose',      'Nose',       [['valley', 'Small'], ['wagon', 'Pointed'], ['walnut', 'Wide'], ['window', 'Round']]],
+  ['mouth',     'Mouth',      [['cactus', 'Smile'], ['engine', 'Neutral'], ['garden', 'Grin'], ['hollow', 'Smirk']]],
+  ['detail',    'Detail',     [['island', 'Glasses'], ['jacket', 'Piercing'], ['ladder', 'Earrings'], ['mirror', 'None']]],
+];
+// Sex (row 0) is picked with the buttons beside the face; the other traits are columns.
+// Option previews zoom in on the part of the face they change (viewBox per trait).
+const ZOOM = { eyes: '33 36 54 54', ears: '8 14 104 104', nose: '35 43 50 50', mouth: '33 55 54 54' };
+
+// ---------- Avatar drawing (SVG, viewBox 0 0 120 120) ----------
+
+const SKIN = ['#f6d5bd', '#e0ac7e', '#a96f47', '#6b4329'];
+const HAIR = ['#2b2522', '#e7c45f', '#b8472c', '#a8a8a8'];
+const IRIS = ['#1d1d1d', '#6b3e1f', '#3b7bd1', '#3a8f4b'];
+const SHIRT = ['#4a78b5', '#c45b9a'];
+
+// Darken (f < 1) a #rrggbb color
+const shade = (hex, f) => '#' + [1, 3, 5].map(i => Math.round(parseInt(hex.slice(i, i + 2), 16) * f).toString(16).padStart(2, '0')).join('');
+
+// c: { sex, skin, hairStyle, ... } -> option index or null (not chosen yet: that part is drawn neutral or left out)
+function avatarSvg(c) {
+  const female = c.sex === 1;
+  const skin = c.skin === null ? '#e4e4e4' : SKIN[c.skin];
+  const line = c.skin === null ? '#9a9a9a' : shade(skin, 0.6);
+  const hair = c.hairColor === null ? '#bdbdbd' : HAIR[c.hairColor];
+  const rx = c.sex === null ? 26.5 : female ? 25 : 28, ry = female ? 31 : 30;   // head size
+  const out = [];
+
+  out.push('<circle cx="60" cy="60" r="58" fill="#eef3f7"/>');
+  // hair behind the head
+  if (c.hairStyle === 1) out.push(`<path d="M29 54 Q28 21 60 21 Q92 21 91 54 L94 98 Q77 104 60 104 Q43 104 26 98 Z" fill="${hair}"/>`);
+  if (c.hairStyle === 3) out.push(`<circle cx="60" cy="19" r="10" fill="${hair}"/>`);
+  // shoulders and neck
+  out.push(`<path d="M18 120 Q22 96 60 94 Q98 96 102 120 Z" fill="${c.sex === null ? '#bbbbbb' : SHIRT[c.sex]}"/>`);
+  out.push(`<rect x="52" y="80" width="16" height="17" fill="${skin}"/>`);
+  // ears (behind the head)
+  if (c.ears !== null) {
+    for (const side of [-1, 1]) {
+      const x = 60 + side * (rx - 1), y = 62;
+      if (c.ears === 0) out.push(`<ellipse cx="${x}" cy="${y}" rx="5" ry="7" fill="${skin}" stroke="${line}" stroke-width="1"/>`);
+      if (c.ears === 1) out.push(`<path d="M${x} ${y + 7} Q${x + side * 7} ${y + 2} ${x + side * 9} ${y - 12} Q${x + side * 2} ${y - 6} ${x} ${y - 6} Z" fill="${skin}" stroke="${line}" stroke-width="1"/>`);
+      if (c.ears === 2) out.push(`<ellipse cx="${x}" cy="${y}" rx="3.5" ry="5" fill="${skin}" stroke="${line}" stroke-width="1"/>`);
+      if (c.ears === 3) out.push(`<ellipse cx="${x + side * 2}" cy="${y}" rx="7.5" ry="10.5" fill="${skin}" stroke="${line}" stroke-width="1"/>`);
+    }
+  }
+  // head
+  out.push(`<ellipse cx="60" cy="58" rx="${rx}" ry="${ry}" fill="${skin}" stroke="${line}" stroke-width="1"${c.skin === null ? ' stroke-dasharray="3 2"' : ''}/>`);
+  // hair on top of the head
+  if (c.hairStyle === 0 || c.hairStyle === 3) out.push(`<path d="M${60 - rx - 1} 52 Q${60 - rx} 24 60 24 Q${60 + rx} 24 ${60 + rx + 1} 52 Q${60 + rx - 6} 36 60 36 Q${60 - rx + 6} 36 ${60 - rx - 1} 52 Z" fill="${hair}"/>`);
+  if (c.hairStyle === 1) out.push(`<path d="M${60 - rx - 1} 54 Q${60 - rx} 24 60 24 Q${60 + rx} 24 ${60 + rx + 1} 54 Q${60 + rx - 8} 34 60 39 Q${60 - rx + 8} 34 ${60 - rx - 1} 54 Z" fill="${hair}"/>`);
+  if (c.hairStyle === 2) for (const [x, y] of [[-24, 47], [-20, 36], [-11, 28], [0, 25], [11, 28], [20, 36], [24, 47]]) out.push(`<circle cx="${60 + x * rx / 26}" cy="${y}" r="7.5" fill="${hair}"/>`);
+  // eyebrows: thicker for male
+  const brow = c.hairColor === null ? '#777' : shade(hair, 0.8);
+  for (const side of [-1, 1]) out.push(`<path d="M${60 + side * 16} 50 Q${60 + side * 11} ${female ? 46 : 48} ${60 + side * 6} 50" fill="none" stroke="${brow}" stroke-width="${female ? 1.6 : 2.8}" stroke-linecap="round"/>`);
+  // eyes
+  for (const side of [-1, 1]) {
+    const x = 60 + side * 11;
+    out.push(`<ellipse cx="${x}" cy="58" rx="5.2" ry="3.8" fill="#fff" stroke="${line}" stroke-width=".6"/>`);
+    out.push(`<circle cx="${x}" cy="58" r="2.7" fill="${c.eyes === null ? '#c8c8c8' : IRIS[c.eyes]}"/>`);
+    out.push(`<circle cx="${x}" cy="58" r="1.2" fill="#111"/><circle cx="${x + .9}" cy="57.1" r=".5" fill="#fff"/>`);
+    if (female) out.push(`<path d="M${x + side * 4.5} 56 l${side * 2} -2 M${x + side * 3} 54.8 l${side * 1.2} -2.2" stroke="#222" stroke-width=".8" stroke-linecap="round"/>`);
+  }
+  // nose
+  const nose = `fill="none" stroke="${line}" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"`;
+  if (c.nose === 0) out.push(`<path d="M59 63 L58 69 Q60 71 62 69" ${nose}/>`);
+  if (c.nose === 1) out.push(`<path d="M61 58 L55 71 L62 71" ${nose}/>`);
+  if (c.nose === 2) out.push(`<path d="M54 69 Q60 74 66 69" ${nose}/><circle cx="56.5" cy="69.5" r="1" fill="${line}"/><circle cx="63.5" cy="69.5" r="1" fill="${line}"/>`);
+  if (c.nose === 3) out.push(`<circle cx="60" cy="68" r="3.8" fill="${shade(skin, 0.88)}" stroke="${line}" stroke-width=".8"/>`);
+  // mouth: colored lips for female
+  const lips = female ? '#c44e6a' : shade(skin, 0.45), lw = female ? 2.6 : 2;
+  const mouth = `fill="none" stroke="${lips}" stroke-width="${lw}" stroke-linecap="round"`;
+  if (c.mouth === 0) out.push(`<path d="M51 78 Q60 86 69 78" ${mouth}/>`);
+  if (c.mouth === 1) out.push(`<path d="M53 80 L67 80" ${mouth}/>`);
+  if (c.mouth === 2) out.push(`<path d="M51 77 Q60 90 69 77 Z" fill="#7a2730" stroke="${lips}" stroke-width="1.5" stroke-linejoin="round"/><path d="M53 78 L67 78 L66 80.5 L54 80.5 Z" fill="#fff"/>`);
+  if (c.mouth === 3) out.push(`<path d="M52 80 Q62 83 69 76" ${mouth}/>`);
+  // detail
+  if (c.detail === 0) out.push(`<g fill="none" stroke="#333" stroke-width="1.5"><circle cx="49" cy="58" r="7"/><circle cx="71" cy="58" r="7"/><path d="M56 57.5 Q60 55.5 64 57.5 M42 57 L${60 - rx + 1} 55 M78 57 L${60 + rx - 1} 55"/></g>`);
+  if (c.detail === 1) out.push(`<circle cx="63.6" cy="70.2" r="2" fill="none" stroke="#9aa3ad" stroke-width="1.2"/><circle cx="57" cy="47.5" r="1" fill="#9aa3ad"/><circle cx="54" cy="48.5" r="1" fill="#9aa3ad"/>`);
+  if (c.detail === 2) for (const side of [-1, 1]) out.push(`<circle cx="${60 + side * (rx + 1)}" cy="71" r="2.4" fill="#e2b13c" stroke="#a67c1a" stroke-width=".6"/>`);
+  // detail 3 = None: nothing drawn (it still has its own reference word, so "no detail" is a choice)
+  return out.join('');
+}
+
+// ---------- Keys (same as akeys.html / mkeys.html) ----------
+
+const $ = id => document.getElementById(id);
+const subtle = crypto.subtle;
+const EC = { name: 'X25519' };
+// PKCS#8 for X25519 = fixed 16-byte header + 32-byte secret
+const PKCS8_HEADER = Uint8Array.from([0x30,0x2e,0x02,0x01,0x00,0x30,0x05,0x06,0x03,0x2b,0x65,0x6e,0x04,0x22,0x04,0x20]);
+
+// base64url without padding, same format as index.html
+const toB64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const fromB64 = s => Uint8Array.from(atob(s.replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+
+// BIP-39 seed derivation: PBKDF2-HMAC-SHA512(NFKD(phrase), salt "mnemonic" + passphrase, 2048 iterations, 64 bytes).
+// Done directly because @scure/bip39 v2 rejects phrases that aren't valid 12-24 word mnemonics.
+async function mnemonicToSeed(phrase, passphrase = '') {
+  const enc = new TextEncoder();
+  const key = await subtle.importKey('raw', enc.encode(phrase.normalize('NFKD')), 'PBKDF2', false, ['deriveBits']);
+  const salt = enc.encode(('mnemonic' + passphrase).normalize('NFKD'));
+  return new Uint8Array(await subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-512', salt, iterations: 2048 }, key, 512));
+}
+
+let picked = PARTS.map(() => null);   // chosen option index per row
+let privateKey = null;   // non-extractable CryptoKey, never displayed
+
+const choices = (sel = picked) => Object.fromEntries(PARTS.map(([key], i) => [key, sel[i]]));
+const chosenCount = () => picked.filter(x => x !== null).length;
+const complete = () => picked.every(x => x !== null);
+const phraseOf = sel => sel.map((o, i) => PARTS[i][2][o][0]).join(' ');
+
+// Each option shows the current avatar with that option applied
+function optionSvg(row, o) {
+  const sel = [...picked];
+  sel[row] = o;
+  return `<svg viewBox="${ZOOM[PARTS[row][0]] || '0 0 120 120'}">${avatarSvg(choices(sel))}</svg>`;
+}
+
+function render() {
+  $('preview').innerHTML = avatarSvg(choices());
+  $('previewName').textContent = $('word').value.trim();
+  // sex: Male on the left of the face, Female on the right
+  PARTS[0][2].forEach(([, name], o) => {
+    const cell = $('sex' + o);
+    cell.className = 'opt sex' + (picked[0] === o ? ' selected' : '');
+    cell.title = name;
+    cell.innerHTML = optionSvg(0, o);
+    cell.append(name);
+    cell.onclick = () => toggle(0, o);
+  });
+  // the other traits: one column each, options stacked
+  $('grid').innerHTML = '';
+  PARTS.forEach(([, label, options], row) => {
+    if (row === 0) return;
+    const col = document.createElement('div');
+    col.className = 'col';
+    const head = document.createElement('div');
+    head.className = 'col-label';
+    head.textContent = label;
+    col.appendChild(head);
+    options.forEach(([, name], o) => {
+      const cell = document.createElement('div');
+      cell.className = 'opt' + (picked[row] === o ? ' selected' : '');
+      cell.title = name;
+      cell.innerHTML = optionSvg(row, o);
+      cell.onclick = () => toggle(row, o);
+      col.appendChild(cell);
+    });
+    $('grid').appendChild(col);
+  });
+  $('pickHint').textContent = `Selected: ${chosenCount()} / ${PARTS.length}`;
+}
+
+// One choice per row: tapping another option in the row replaces it, tapping the chosen one clears it
+function toggle(row, o) {
+  picked[row] = picked[row] === o ? null : o;
+  render();
+  update();
+}
+
+// Lowercased so a phone auto-capitalizing the first letter doesn't change the keys
+const secretWord = () => $('word').value.trim().toLowerCase();
+
+function update() {
+  if (complete() && secretWord().length >= 3) deriveKeys();
+  else clearKeys();
+}
+
+function clearKeys() {
+  privateKey = null;
+  $('pubOut').value = $('decOut').value = $('decErr').textContent = '';
+  updateView();
+}
+
+// 9 reference words + avatar's name (as the BIP-39 passphrase) -> BIP-39 seed (PBKDF2-HMAC-SHA512) -> first 32 bytes = X25519 private key
+async function keyPair(phrase, word) {
+  const seed = await mnemonicToSeed(phrase, word);
+  const pkcs8 = new Uint8Array(48);
+  pkcs8.set(PKCS8_HEADER);
+  pkcs8.set(seed.slice(0, 32), 16);
+  // Extractable only long enough to compute the public key, then re-imported as non-extractable
+  const tmp = await subtle.importKey('pkcs8', pkcs8, EC, true, ['deriveKey']);
+  const jwk = await subtle.exportKey('jwk', tmp);
+  const pubKey = await subtle.importKey('jwk', { kty: 'OKP', crv: 'X25519', x: jwk.x }, EC, true, []);
+  const pub = toB64(await subtle.exportKey('raw', pubKey));
+  const priv = await subtle.importKey('pkcs8', pkcs8, EC, false, ['deriveKey']);
+  return { pub, priv };
+}
+
+async function deriveKeys() {
+  const phrase = phraseOf(picked);
+  const word = secretWord();
+  try {
+    const { pub, priv } = await keyPair(phrase, word);
+    if (!complete() || phraseOf(picked) !== phrase || secretWord() !== word) return;   // changed while deriving
+    privateKey = priv;
+    $('pubOut').value = pub;
+    updateView();
+    if (link.d && (!link.p || link.p === pub)) {
+      const text = await decrypt(link.d, pub);
+      if (text !== null) showMessage(text);
+      else setLinkHint('This message could not be read. The link may be incomplete.');
+    } else if (link.d) {
+      setLinkHint("This avatar and name do not match the key this message was sent to.");
+    }
+  } catch (e) {
+    console.log('Could not create keys:', e);
+    alert('Could not create keys: ' + e + '\n(X25519 needs Chrome 133+, Firefox 130+, Safari 17+.)');
+  }
+}
+
+// Manual decrypt ("3. Decrypt a message" section, shown by the Manual button)
+async function manualDecrypt() {
+  $('decErr').textContent = '';
+  $('decOut').value = '';
+  if (!privateKey) {
+    $('decErr').textContent = "Build your avatar and type its name first.";
+    return;
+  }
+  const text = await decrypt($('decIn').value, $('pubOut').value);
+  if (text !== null) $('decOut').value = text;
+  else $('decErr').textContent = "Decryption failed: wrong avatar, wrong name or corrupted text.";
+}
+
+// Reading the clipboard needs a user tap; some browsers also show a "Paste" confirmation or permission prompt
+async function pasteAndDecrypt() {
+  try {
+    $('decIn').value = await navigator.clipboard.readText();
+  } catch (e) {
+    $('decErr').textContent = 'Could not read the clipboard. Paste the text in the box and tap Decrypt.';
+    return;
+  }
+  await manualDecrypt();
+}
+
+// Input format: base64url( ephemeralPub[32] | iv[12] | ciphertext ), as produced by index.html.
+// Returns the message, or null if it can't be decrypted. On success the key pair (pub -> privateKey) is saved.
+async function decrypt(b64, pub) {
+  try {
+    const data = fromB64(b64);
+    const ephPub = await subtle.importKey('raw', data.slice(0, 32), EC, false, []);
+    const key = await subtle.deriveKey({ name: 'X25519', public: ephPub }, privateKey, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+    const pt = await subtle.decrypt({ name: 'AES-GCM', iv: data.slice(32, 44) }, key, data.slice(44));
+    saveKey(pub, privateKey);
+    return new TextDecoder().decode(pt);
+  } catch (e) {
+    console.log('Decryption failed:', e);
+    return null;
+  }
+}
+
+// Manual off: big share button (once keys exist). Manual on: section 2 with the key, and section 3 (decrypt).
+let manual = false;
+
+function updateView() {
+  const hasKeys = !!$('pubOut').value;
+  $('shareSection').classList.toggle('hidden', !hasKeys || manual);
+  $('keySection').classList.toggle('hidden', !hasKeys || !manual);
+  $('decSection').classList.toggle('hidden', !manual);
+}
+
+// Big button: share sheet on phones, otherwise copy the key
+async function bigShare() {
+  if (useShare) return share();
+  await copyKey();
+  $('btnBigShare').textContent = 'Chave copiada!';
+  setTimeout(() => $('btnBigShare').textContent = 'Compartilhar chave publica', 1500);
+}
+
+async function copyKey() {
+  saveKey($('pubOut').value, privateKey);
+  await navigator.clipboard.writeText($('pubOut').value);
+}
+
+async function copy(btn) {
+  await copyKey();
+  btn.textContent = 'Copied!';
+  setTimeout(() => btn.textContent = 'Copy', 1200);
+}
+
+async function share() {
+  saveKey($('pubOut').value, privateKey);
+  try {
+    await navigator.share({ text: $('pubOut').value });
+  } catch (e) {
+    if (e.name !== 'AbortError') alert('Could not share: ' + e);   // AbortError = user closed the share sheet
+  }
+}
+
+// Keys are kept in this browser's IndexedDB as a map: public key -> private key.
+// Only keys that are actually used are saved: public key copied/shared, or a message decrypted.
+// The private key is stored as a non-extractable CryptoKey, so it can decrypt but can't be read back.
+// Nothing goes to the server; if the storage is cleared, building the same avatar and name recreates the keys.
+function db() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('avatar-keys2', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('keys');
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function saveKey(pub, priv) {
+  try {
+    const tx = (await db()).transaction('keys', 'readwrite');
+    tx.objectStore('keys').put(priv, pub);
+    await new Promise((resolve, reject) => { tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); });
+    navigator.storage?.persist?.();   // ask the browser not to evict the data (Safari may ignore it)
+  } catch (e) {
+    console.log('Could not save key:', e);
+  }
+}
+
+async function loadKey(pub) {
+  try {
+    const req = (await db()).transaction('keys').objectStore('keys').get(pub);
+    return await new Promise((resolve, reject) => { req.onsuccess = () => resolve(req.result); req.onerror = () => reject(req.error); });
+  } catch (e) {
+    console.log('Could not load key:', e);
+  }
+}
+
+function setLinkHint(text) {
+  $('linkHint').textContent = text;
+  $('linkHint').classList.toggle('hidden', !text);
+}
+
+// Message links: avkeys2.html#p=<public key>&d=<encrypted text> (or ?p=...&d=...)
+const params = new URLSearchParams(location.hash.slice(1) || location.search);
+const link = { p: params.get('p'), d: params.get('d') };
+// m=1: open in manual mode; a decrypted link message then shows in section 3 instead of the message-only view
+const forceManual = params.get('m') === '1';
+
+// Test keys: #k=<9 reference words, comma-separated>,<name> (repeat k for several) derives and saves each key pair,
+// so later message links for those keys open directly. Example: #k=orbit,anchor,eagle,jungle,napkin,ribbon,valley,cactus,island,ana
+async function registerKeys() {
+  const entries = params.getAll('k');
+  if (!entries.length) return;
+  const lines = [];
+  for (const entry of entries) {
+    const parts = entry.split(',').map(x => x.trim().toLowerCase());
+    if (parts.length !== PARTS.length + 1 || parts.some(x => !x)) {
+      lines.push(`Invalid k=${entry} (expected ${PARTS.length} reference words and a name)`);
+      continue;
+    }
+    const { pub, priv } = await keyPair(parts.slice(0, PARTS.length).join(' '), parts[PARTS.length]);
+    await saveKey(pub, priv);
+    lines.push(`Registered ${parts.slice(0, PARTS.length).join(' ')} + ${parts[PARTS.length]}: ${pub}`);
+  }
+  setLinkHint(lines.join('\n'));
+  // Remove k from the address bar so the words don't stay visible; keep p and d if present
+  params.delete('k');
+  const rest = params.toString();
+  history.replaceState(null, '', location.pathname + (location.hash ? (rest ? '#' + rest : '') : (rest ? '?' + rest : '')));
+}
+
+// After a message link decrypts, show only the message (as text, never as HTML)
+function showMessage(text) {
+  if (!forceManual) return showPlain(text);
+  $('decIn').value = link.d;
+  $('decOut').value = text;
+}
+
+function showPlain(text) {
+  for (const section of document.querySelectorAll('section')) section.classList.add('hidden');
+  $('plainView').textContent = text;
+  $('plainView').classList.remove('hidden');
+}
+
+async function openLink() {
+  if (!link.d) return;
+  const priv = link.p && await loadKey(link.p);
+  if (priv && chosenCount() === 0) {
+    privateKey = priv;
+    if (forceManual) {
+      $('pubOut').value = link.p;
+      updateView();
+    }
+    const text = await decrypt(link.d, link.p);
+    if (text !== null) showMessage(text);
+    else setLinkHint('This message could not be read. The link may be incomplete.');
+  } else if (!priv) {
+    // No saved key on this browser: switch to manual mode with the message in the decrypt box
+    manual = true;
+    updateView();
+    $('decIn').value = link.d;
+    setLinkHint("You received a message. Build your avatar and type its name to read it.");
+  }
+}
+
+$('btnReset').onclick = () => { picked = PARTS.map(() => null); $('word').value = ''; render(); clearKeys(); };
+$('word').oninput = () => { $('previewName').textContent = $('word').value.trim(); update(); };
+$('btnCopyPub').onclick = e => copy(e.target);
+$('btnSharePub').onclick = share;
+// On phones/tablets (touchscreen as main input) with the Web Share API, show Share instead of Copy
+const useShare = navigator.share && matchMedia('(pointer: coarse)').matches;
+if (useShare) {
+  $('btnSharePub').classList.remove('hidden');
+  $('btnCopyPub').classList.add('hidden');
+}
+$('btnManual').onclick = () => { manual = !manual; updateView(); };
+$('btnBigShare').onclick = bigShare;
+$('btnDec').onclick = manualDecrypt;
+$('btnPasteDec').onclick = pasteAndDecrypt;
+if (navigator.clipboard?.readText) $('btnPasteDec').classList.remove('hidden');
+render();
+if (forceManual) {
+  manual = true;
+  updateView();
+}
+registerKeys().catch(e => setLinkHint("Could not register keys: " + e)).then(openLink);
+</script>
+</body>
+</html>
